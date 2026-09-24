@@ -1,0 +1,35 @@
+[
+  {
+    "name": "strong backend fit",
+    "facts": [
+      {"kind": "skill", "title": "python"},
+      {"kind": "skill", "title": "postgresql"},
+      {"kind": "skill", "title": "docker"},
+      {"kind": "role", "title": "Backend Developer at Initech", "years": 5}
+    ],
+    "job": "Required: Python, PostgreSQL and Docker. 3 years of experience building services.",
+    "expected": {"python": "matched", "postgresql": "matched", "docker": "matched", "3 years": "matched"},
+    "score_range": [90, 100]
+  },
+  {
+    "name": "career changer into analytics",
+    "facts": [
+      {"kind": "skill", "title": "excel"},
+      {"kind": "skill", "title": "communication"},
+      {"kind": "role", "title": "Operations Coordinator at Globex", "years": 2}
+    ],
+    "job": "Required: SQL, Tableau, Excel and strong communication. 3 years of analytics experience.",
+    "expected": {"sql": "missing", "tableau": "missing", "excel": "matched", "communication": "matched", "3 years": "partial"},
+    "score_range": [40, 70]
+  },
+  {
+    "name": "unverified skills never count",
+    "facts": [
+      {"kind": "skill", "title": "kubernetes", "verified": false},
+      {"kind": "skill", "title": "aws"}
+    ],
+    "job": "Required: Kubernetes and AWS. Nice to have Terraform.",
+    "expected": {"kubernetes": "missing", "aws": "matched", "terraform": "missing"},
+    "score_range": [30, 60]
+  }
+]

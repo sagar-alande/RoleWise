@@ -1,0 +1,15 @@
+---
+description: RoleWise project rules (mirrors CLAUDE.md)
+alwaysApply: true
+---
+
+Follow every rule in `CLAUDE.md` at the repo root. The most important ones:
+
+- Generated content uses only verified `career_facts`. Each claim stores `supporting_fact_ids`.
+- No application is submitted without an `approvals` row matching the package hash.
+- Personal questions (salary, work authorization, demographics, relocation, start date) go to the user.
+- Only allow-listed job sources. No scraping of sites whose terms forbid it.
+- No personal data in logs.
+- The match score comes from `rolewise/services/matching.py`. The LLM only explains it.
+- Every schema change needs an Alembic migration. Every API edge uses Pydantic schemas.
+- Frontend calls the backend only through `apps/web/lib/api.ts`.

@@ -16,6 +16,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -42,6 +43,8 @@ class User(Base):
     id: Mapped[uuid.UUID] = _id()
     auth_subject: Mapped[str] = mapped_column(String(255), unique=True)  # Cognito sub
     email: Mapped[str] = mapped_column(String(320))
+    # Resume header: {"full_name", "email", "phone", "location", "links": [...], "headline"}. User-entered only.
+    contact: Mapped[dict] = mapped_column(JSONB, default=dict, server_default=text("'{}'::jsonb"))
     created_at: Mapped[datetime] = _created()
 
 
@@ -79,6 +82,15 @@ class Preference(Base):
     employment_types: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
     industries: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
     dealbreakers: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
+    # Matching filters and signals modeled on career-ops (see services/matching.py).
+    excluded_title_keywords: Mapped[list[str]] = mapped_column(
+        ARRAY(String), default=list, server_default=text("'{}'")
+    )
+    skip_tiers: Mapped[list[str]] = mapped_column(ARRAY(String), default=list, server_default=text("'{}'"))
+    authorized_in: Mapped[list[str]] = mapped_column(ARRAY(String), default=list, server_default=text("'{}'"))
+    needs_sponsorship: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # [{"name": "Data Engineer", "fit": "primary|secondary|adjacent"}]
+    archetypes: Mapped[list] = mapped_column(JSONB, default=list, server_default=text("'[]'::jsonb"))
 
 
 class JobSource(Base):
@@ -102,7 +114,9 @@ class Job(Base):
     external_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     company: Mapped[str] = mapped_column(String(255))
     title: Mapped[str] = mapped_column(String(500))
-    location: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Some employers list many regions in one string (e.g. Datadog remote postings) - well past a
+    # typical "City, State" length, so this needs real headroom, not just a little.
+    location: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     remote_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
     salary_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
     salary_max: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -111,8 +125,19 @@ class Job(Base):
     content_hash: Mapped[str] = mapped_column(String(64))
     requirements_extracted: Mapped[bool] = mapped_column(Boolean, default=False)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBED_DIMS), nullable=True)
+    # Title only (not title+description like `embedding`). Backs semantic "target roles" matching,
+    # which needs the title's own meaning, not diluted by the rest of the posting.
+    title_embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBED_DIMS), nullable=True)
     posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = _created()
+    # Source evidence only - never mutated by age alone. unknown|active|possibly_stale|closed. See
+    # worker/tasks.py's liveness pass: possibly_stale means "absent from one trusted refresh", closed
+    # means "absent from two consecutive trusted refreshes". A failed or suspicious refresh never
+    # changes this. Time-based staleness ("not checked in N days") is computed for display from
+    # last_checked_at, never persisted here, so "not recently checked" and "checked and missing" stay
+    # distinguishable.
+    listing_status: Mapped[str] = mapped_column(String(16), default="unknown", server_default="unknown")
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class JobRequirement(Base):
@@ -125,6 +150,10 @@ class JobRequirement(Base):
     text: Mapped[str] = mapped_column(Text)
     normalized: Mapped[str | None] = mapped_column(String(255), nullable=True)
     min_years: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # critical|high|meaningful|preferred|low_signal, judged from the posting alone (never from the CV)
+    importance: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    evidence_tier: Mapped[str | None] = mapped_column(String(16), nullable=True)  # stated|structural|inferred
+    jd_signal: Mapped[str | None] = mapped_column(Text, nullable=True)  # verbatim quote from the posting
     embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBED_DIMS), nullable=True)
 
 
@@ -135,6 +164,9 @@ class Match(Base):
     user_id: Mapped[uuid.UUID] = _user_fk()
     job_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="CASCADE"))
     score: Mapped[float] = mapped_column(Float)  # 0..100, from services/matching.py only
+    global_score: Mapped[float | None] = mapped_column(Float, nullable=True)  # 1..5
+    # apply_now|worth_applying|only_with_reason|not_recommended|hard_stop
+    verdict: Mapped[str | None] = mapped_column(String(32), nullable=True)
     breakdown: Mapped[dict] = mapped_column(JSONB)
     explanation: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="new")
@@ -159,6 +191,7 @@ class Document(Base):
     """V2: generated resume or cover letter."""
 
     __tablename__ = "documents"
+    __table_args__ = (Index("ix_documents_match_kind", "match_id", "kind"),)
     id: Mapped[uuid.UUID] = _id()
     user_id: Mapped[uuid.UUID] = _user_fk()
     match_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -183,6 +216,7 @@ class Claim(Base):
     text: Mapped[str] = mapped_column(Text)
     supporting_fact_ids: Mapped[list[uuid.UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), default=list)
     validator_status: Mapped[str] = mapped_column(String(32), default="pending")  # pending|ok|rejected
+    validator_note: Mapped[str | None] = mapped_column(Text, nullable=True)  # why a claim was rejected
 
 
 class Approval(Base):

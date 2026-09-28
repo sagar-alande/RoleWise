@@ -43,26 +43,32 @@ export class RoleWiseStack extends cdk.Stack {
     const name = (s: string) => `rolewise-${props.envName}-${s}`;
 
     // ---------------------------------------------------------------- network
+    // Dev/staging: no NAT gateway, no interface endpoints (~$118/mo) - the worker runs in a public
+    // subnet instead, same tradeoff the web/api Express services already make (see infra/README.md).
+    // Prod: worker stays in a private-with-egress subnet behind NAT, reaching AWS services over
+    // interface endpoints instead of the public internet.
     const vpc = new ec2.Vpc(this, "Vpc", {
       maxAzs: 2,
-      natGateways: isProd ? 2 : 1,
+      natGateways: isProd ? 2 : 0,
       subnetConfiguration: [
         { name: "public", subnetType: ec2.SubnetType.PUBLIC },
-        { name: "app", subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+        ...(isProd ? [{ name: "app", subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS }] : []),
         { name: "data", subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
       ],
     });
-    // Keep S3 and ECR traffic off the NAT gateway.
+    // Always free (no hourly charge) - keep S3 traffic off the public internet regardless of env.
     vpc.addGatewayEndpoint("S3Endpoint", { service: ec2.GatewayVpcEndpointAwsService.S3 });
-    for (const [id, svc] of [
-      ["Ecr", ec2.InterfaceVpcEndpointAwsService.ECR],
-      ["EcrDocker", ec2.InterfaceVpcEndpointAwsService.ECR_DOCKER],
-      ["Sqs", ec2.InterfaceVpcEndpointAwsService.SQS],
-      ["Secrets", ec2.InterfaceVpcEndpointAwsService.SECRETS_MANAGER],
-      ["Logs", ec2.InterfaceVpcEndpointAwsService.CLOUDWATCH_LOGS],
-      ["Bedrock", ec2.InterfaceVpcEndpointAwsService.BEDROCK_RUNTIME],
-    ] as const) {
-      vpc.addInterfaceEndpoint(`${id}Endpoint`, { service: svc, subnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS } });
+    if (isProd) {
+      for (const [id, svc] of [
+        ["Ecr", ec2.InterfaceVpcEndpointAwsService.ECR],
+        ["EcrDocker", ec2.InterfaceVpcEndpointAwsService.ECR_DOCKER],
+        ["Sqs", ec2.InterfaceVpcEndpointAwsService.SQS],
+        ["Secrets", ec2.InterfaceVpcEndpointAwsService.SECRETS_MANAGER],
+        ["Logs", ec2.InterfaceVpcEndpointAwsService.CLOUDWATCH_LOGS],
+        ["Bedrock", ec2.InterfaceVpcEndpointAwsService.BEDROCK_RUNTIME],
+      ] as const) {
+        vpc.addInterfaceEndpoint(`${id}Endpoint`, { service: svc, subnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS } });
+      }
     }
 
     const appSg = new ec2.SecurityGroup(this, "AppSg", { vpc, description: "RoleWise application tasks" });
@@ -226,8 +232,12 @@ export class RoleWiseStack extends cdk.Stack {
       logging: ecs.LogDrivers.awsLogs({ logGroup: workerLogs, streamPrefix: "worker" }),
     });
 
+    // Where the worker (and one-off migration tasks) reach the internet: a private subnet behind
+    // NAT in prod, or directly in the public subnet in dev/staging (no NAT gateway exists there).
+    const egressSubnetType = isProd ? ec2.SubnetType.PRIVATE_WITH_EGRESS : ec2.SubnetType.PUBLIC;
+    const egressSubnetIds = vpc.selectSubnets({ subnetType: egressSubnetType }).subnetIds;
+
     if (props.deployServices) {
-      const privateSubnets = vpc.selectSubnets({ subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS }).subnetIds;
       const publicSubnets = vpc.publicSubnets.map((s) => s.subnetId);
 
       const worker = new ecs.FargateService(this, "Worker", {
@@ -235,7 +245,8 @@ export class RoleWiseStack extends cdk.Stack {
         taskDefinition: workerTaskDef,
         desiredCount: isProd ? 1 : 0,
         securityGroups: [appSg],
-        vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+        vpcSubnets: { subnetType: egressSubnetType },
+        assignPublicIp: !isProd,
         minHealthyPercent: 100,
         circuitBreaker: { rollback: true },
       });
@@ -285,16 +296,17 @@ export class RoleWiseStack extends cdk.Stack {
 
       new cdk.CfnOutput(this, "ApiEndpoint", { value: api.attrEndpoint });
       new cdk.CfnOutput(this, "WebEndpoint", { value: web.attrEndpoint });
-      new cdk.CfnOutput(this, "PrivateSubnets", { value: privateSubnets.join(",") });
     }
 
     // ---------------------------------------------------------------- outputs used by CI
     new cdk.CfnOutput(this, "ClusterName", { value: cluster.clusterName });
     new cdk.CfnOutput(this, "WorkerTaskDefinition", { value: workerTaskDef.taskDefinitionArn });
     new cdk.CfnOutput(this, "AppSecurityGroup", { value: appSg.securityGroupId });
-    new cdk.CfnOutput(this, "MigrationSubnets", {
-      value: vpc.selectSubnets({ subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS }).subnetIds.join(","),
-    });
+    // A one-off migration task needs a route to the internet (to reach ECR and the DB's Secrets
+    // Manager secret over HTTPS) plus a public IP when it lands in a public subnet - see
+    // egressSubnetType above. CI must pass --enable-execute-command network settings matching this.
+    new cdk.CfnOutput(this, "MigrationSubnets", { value: egressSubnetIds.join(",") });
+    new cdk.CfnOutput(this, "MigrationAssignPublicIp", { value: isProd ? "DISABLED" : "ENABLED" });
     new cdk.CfnOutput(this, "WebRepoUri", { value: webRepo.repositoryUri });
     new cdk.CfnOutput(this, "BackendRepoUri", { value: backendRepo.repositoryUri });
     new cdk.CfnOutput(this, "UserPoolId", { value: userPool.userPoolId });

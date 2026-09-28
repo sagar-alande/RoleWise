@@ -7,7 +7,7 @@ import json
 from rolewise.services.ai import get_ai
 from rolewise.services.matching import MatchResult
 
-PROMPT = "match_explanation.v1"
+PROMPT = "match_explanation.v2"
 
 
 def explain_match(job_title: str, company: str, result: MatchResult) -> tuple[dict, str, str]:

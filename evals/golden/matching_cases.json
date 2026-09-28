@@ -2,34 +2,151 @@
   {
     "name": "strong backend fit",
     "facts": [
-      {"kind": "skill", "title": "python"},
-      {"kind": "skill", "title": "postgresql"},
-      {"kind": "skill", "title": "docker"},
-      {"kind": "role", "title": "Backend Developer at Initech", "years": 5}
+      {
+        "kind": "skill",
+        "title": "python"
+      },
+      {
+        "kind": "skill",
+        "title": "postgresql"
+      },
+      {
+        "kind": "skill",
+        "title": "docker"
+      },
+      {
+        "kind": "role",
+        "title": "Backend Developer at Initech",
+        "years": 5
+      }
     ],
-    "job": "Required: Python, PostgreSQL and Docker. 3 years of experience building services.",
-    "expected": {"python": "matched", "postgresql": "matched", "docker": "matched", "3 years": "matched"},
-    "score_range": [90, 100]
+    "job": "Requirements: you must have Python, PostgreSQL and Docker. 3 years of experience building services.",
+    "expected": {
+      "python": "matched",
+      "postgresql": "matched",
+      "docker": "matched",
+      "3 years": "matched"
+    },
+    "score_range": [
+      90,
+      100
+    ],
+    "title": "Engineer",
+    "expected_verdict": "apply_now"
   },
   {
     "name": "career changer into analytics",
     "facts": [
-      {"kind": "skill", "title": "excel"},
-      {"kind": "skill", "title": "communication"},
-      {"kind": "role", "title": "Operations Coordinator at Globex", "years": 2}
+      {
+        "kind": "skill",
+        "title": "excel"
+      },
+      {
+        "kind": "skill",
+        "title": "communication"
+      },
+      {
+        "kind": "role",
+        "title": "Operations Coordinator at Globex",
+        "years": 2
+      }
     ],
     "job": "Required: SQL, Tableau, Excel and strong communication. 3 years of analytics experience.",
-    "expected": {"sql": "missing", "tableau": "missing", "excel": "matched", "communication": "matched", "3 years": "partial"},
-    "score_range": [40, 70]
+    "expected": {
+      "sql": "missing",
+      "tableau": "missing",
+      "excel": "matched",
+      "communication": "matched",
+      "3 years": "partial"
+    },
+    "score_range": [
+      40,
+      70
+    ],
+    "title": "Engineer"
   },
   {
     "name": "unverified skills never count",
     "facts": [
-      {"kind": "skill", "title": "kubernetes", "verified": false},
-      {"kind": "skill", "title": "aws"}
+      {
+        "kind": "skill",
+        "title": "kubernetes",
+        "verified": false
+      },
+      {
+        "kind": "skill",
+        "title": "aws"
+      }
     ],
     "job": "Required: Kubernetes and AWS. Nice to have Terraform.",
-    "expected": {"kubernetes": "missing", "aws": "matched", "terraform": "missing"},
-    "score_range": [30, 60]
+    "expected": {
+      "kubernetes": "missing",
+      "aws": "matched",
+      "terraform": "missing"
+    },
+    "score_range": [
+      30,
+      60
+    ],
+    "title": "Engineer"
+  },
+  {
+    "name": "no sponsorship outside authorized country",
+    "title": "Data Engineer",
+    "location": "London, UK",
+    "facts": [
+      {
+        "kind": "skill",
+        "title": "python"
+      },
+      {
+        "kind": "skill",
+        "title": "sql"
+      }
+    ],
+    "prefs": {
+      "authorized_in": [
+        "United States"
+      ],
+      "needs_sponsorship": true
+    },
+    "job": "Requirements: you must have Python and SQL. We are unable to sponsor visas for this role.",
+    "expected": {
+      "python": "matched",
+      "sql": "matched"
+    },
+    "expected_verdict": "hard_stop",
+    "score_range": [
+      90,
+      100
+    ]
+  },
+  {
+    "name": "title skill is critical",
+    "title": "Kubernetes Platform Engineer",
+    "facts": [
+      {
+        "kind": "skill",
+        "title": "docker"
+      },
+      {
+        "kind": "skill",
+        "title": "linux"
+      }
+    ],
+    "job": "Requirements: Docker and Linux. You will run our clusters.",
+    "expected": {
+      "kubernetes": "missing",
+      "docker": "matched",
+      "linux": "matched"
+    },
+    "expected_importance": {
+      "kubernetes": "critical"
+    },
+    "expected_verdict": "not_recommended",
+    "score_range": [
+      30,
+      60
+    ]
   }
 ]

@@ -19,3 +19,27 @@ body {
   color: var(--fg);
   min-height: 100vh;
 }
+
+/* Print: only the document sheet, so "Print / Save as PDF" gives a clean one-page resume or letter. */
+@media print {
+  @page {
+    margin: 0.6in;
+  }
+  body {
+    background: white;
+  }
+  header,
+  .no-print {
+    display: none !important;
+  }
+  main {
+    padding: 0 !important;
+    max-width: none !important;
+  }
+  .print-sheet {
+    box-shadow: none !important;
+    border: none !important;
+    padding: 0 !important;
+    max-width: none !important;
+  }
+}

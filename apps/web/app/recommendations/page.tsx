@@ -1,11 +1,20 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
-import { Button, Card, ErrorNote, RequirementTags, ScoreBadge, SectionEyebrow } from "@/components/ui";
+import { AlignmentLabel, Button, Card, ErrorNote, ListingStatusLabel, RequirementTags, ScoreBadge, SectionEyebrow } from "@/components/ui";
 import { api, waitForRun, type Match } from "@/lib/api";
 
+const FLAG_LABELS: Record<string, string> = {
+  geo_mismatch: "remote listing asks for office days",
+  level_stretch: "level is a stretch",
+  level_down: "level is below yours",
+  critical_gap: "missing a critical requirement",
+};
+
 export default function RecommendationsPage() {
+  const router = useRouter();
   const [matches, setMatches] = useState<Match[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -51,7 +60,9 @@ export default function RecommendationsPage() {
         <div>
           <SectionEyebrow>Matches</SectionEyebrow>
           <h1 className="mt-1 text-3xl font-semibold tracking-tight text-slate-900">Recommended jobs</h1>
-          <p className="mt-1 text-sm text-slate-600">Ranked by fit with your verified profile and preferences.</p>
+          <p className="mt-1 text-sm text-slate-600">
+            Ranked by fit with your verified profile and preferences. 75% and above is strong alignment.
+          </p>
         </div>
         <Button onClick={refresh} disabled={refreshing}>
           {refreshing ? "Searching…" : "Search jobs & refresh"}
@@ -81,9 +92,13 @@ export default function RecommendationsPage() {
                 <Card className="flex items-start gap-4 transition-shadow hover:shadow-[0_1px_2px_rgba(15,23,42,0.04),0_12px_28px_-12px_rgba(15,23,42,0.14)]">
                   <ScoreBadge score={m.score} />
                   <div className="min-w-0 flex-1">
-                    <Link href={`/matches/${m.id}`} className="font-semibold text-slate-900 hover:text-indigo-600">
-                      {m.job.title}
-                    </Link>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Link href={`/matches/${m.id}`} className="font-semibold text-slate-900 hover:text-indigo-600">
+                        {m.job.title}
+                      </Link>
+                      <AlignmentLabel score={m.score} />
+                      <ListingStatusLabel status={m.job.listing_status} />
+                    </div>
                     <p className="text-sm text-slate-500">
                       {m.job.company}
                       {m.job.location ? ` · ${m.job.location}` : ""}
@@ -92,9 +107,18 @@ export default function RecommendationsPage() {
                     <p className="mt-2 text-sm text-slate-700">
                       {m.explanation?.summary ?? `Matches ${matched} of ${reqs.length} requirements.`}
                     </p>
+                    {(m.breakdown.hard_stops ?? []).map((h, i) => (
+                      <p key={i} className="mt-2 text-sm font-medium text-rose-700">Blocker: {h.message}</p>
+                    ))}
+                    {(m.breakdown.flags ?? []).length > 0 && (
+                      <p className="mt-1 text-xs text-amber-700">
+                        Heads up: {(m.breakdown.flags ?? []).map((f) => FLAG_LABELS[f.code] ?? f.code).join(" · ")}
+                      </p>
+                    )}
                     <RequirementTags requirements={reqs} />
                   </div>
                   <div className="flex shrink-0 flex-col gap-2">
+                    <Button onClick={() => router.push(`/matches/${m.id}`)}>View match</Button>
                     <Button variant="secondary" onClick={() => setStatus(m.id, m.status === "saved" ? "new" : "saved")}>
                       {m.status === "saved" ? "Saved" : "Save"}
                     </Button>

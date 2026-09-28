@@ -27,8 +27,12 @@ def _own_fact(db: Session, user: User, fact_id: uuid.UUID) -> CareerFact:
 
 @router.get("/facts", response_model=list[schemas.FactOut])
 def list_facts(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    # id as a tiebreaker: facts bulk-inserted from one resume-parse commonly share the same
+    # created_at down to the timestamp column's precision, and Postgres doesn't guarantee a stable
+    # order for ties - without this, the list can visibly re-shuffle between requests.
     return db.scalars(
-        select(CareerFact).where(CareerFact.user_id == user.id).order_by(CareerFact.kind, CareerFact.created_at)
+        select(CareerFact).where(CareerFact.user_id == user.id)
+        .order_by(CareerFact.kind, CareerFact.created_at, CareerFact.id)
     ).all()
 
 
@@ -45,13 +49,19 @@ def create_fact(body: schemas.FactCreate, user: User = Depends(current_user), db
 @router.patch("/facts/{fact_id}", response_model=schemas.FactOut)
 def update_fact(fact_id: uuid.UUID, body: schemas.FactUpdate, user: User = Depends(current_user),
                 db: Session = Depends(get_db)):
+    # Provenance: resume_parse means "untouched, accepted parser output"; user_edit means the user has
+    # actually changed the content. An explicit edit always earns user_edit, even starting from
+    # resume_parse - confirming a fact as-is (POST .../verify, below) never touches source.
     fact = _own_fact(db, user, fact_id)
+    edited = False
     if body.title is not None:
         fact.title = body.title
         fact.embedding = None  # re-embedded on next scoring run
+        edited = True
     if body.details is not None:
         fact.details = body.details
-    if fact.source != "resume_parse":
+        edited = True
+    if edited:
         fact.source = "user_edit"
     db.commit()
     return fact
@@ -109,8 +119,31 @@ def parse_resume(body: schemas.ParseRequest, user: User = Depends(current_user),
     run = AgentRun(user_id=user.id, task="parse_resume")
     db.add(run)
     db.commit()
-    enqueue("parse_resume", run.id, {"user_id": str(user.id), "s3_key": body.s3_key, "filename": body.filename})
+    enqueue(
+        "parse_resume",
+        run.id,
+        {
+            "user_id": str(user.id),
+            "s3_key": body.s3_key,
+            "filename": body.filename,
+            "replace_existing": body.replace_existing,
+        },
+    )
     return schemas.TaskAccepted(run_id=run.id)
+
+
+@router.post("/reset", status_code=204)
+def reset_profile(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Reset career profile: removes the resume reference and every career fact, verified or pending.
+    Never touches preferences, contact, saved jobs/match history or generated documents - those need
+    a deliberately broader reset the user hasn't asked for here."""
+    for f in db.scalars(select(CareerFact).where(CareerFact.user_id == user.id)).all():
+        db.delete(f)
+    doc = db.scalar(select(Document).where(Document.user_id == user.id, Document.kind == "uploaded_resume"))
+    if doc:
+        db.delete(doc)
+    db.add(AuditLog(user_id=user.id, actor="user", action="profile_reset", details={}))
+    db.commit()
 
 
 @router.get("/resume", response_model=schemas.ResumeOut | None)
@@ -134,3 +167,16 @@ def get_run(run_id: uuid.UUID, user: User = Depends(current_user), db: Session =
     if not run or run.user_id != user.id:
         raise HTTPException(404, "Run not found")
     return run
+
+
+@router.get("/contact", response_model=schemas.ContactIn)
+def get_contact(user: User = Depends(current_user)):
+    return schemas.ContactIn(**{"email": user.email, **(user.contact or {})})
+
+
+@router.put("/contact", response_model=schemas.ContactIn)
+def put_contact(body: schemas.ContactIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    user.contact = body.model_dump()
+    db.add(user)
+    db.commit()
+    return body

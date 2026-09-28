@@ -2,35 +2,31 @@
 
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
-import { Button, Card, ErrorNote, SectionEyebrow, StepBadge } from "@/components/ui";
-import { api, waitForRun, type Fact, type FactKind, type Preferences, type Resume } from "@/lib/api";
-
-const KINDS: FactKind[] = ["skill", "role", "project", "education", "certification", "achievement"];
-const YEARS_KINDS: FactKind[] = ["skill", "role"];
-const KIND_LABELS: Record<FactKind, string> = {
-  skill: "Skills",
-  role: "Experience",
-  project: "Projects",
-  education: "Education",
-  certification: "Certifications",
-  achievement: "Achievements",
-};
-const split = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean);
+import { ErrorNote, SectionEyebrow } from "@/components/ui";
+import { CareerInformationCard } from "@/components/profile/CareerInformationCard";
+import { ContactCard } from "@/components/profile/ContactCard";
+import { FITS, KINDS, split } from "@/components/profile/constants";
+import { NextStepBanner } from "@/components/profile/NextStepBanner";
+import { PreferencesCard } from "@/components/profile/PreferencesCard";
+import { ResumeCard } from "@/components/profile/ResumeCard";
+import { VerificationStatusCard } from "@/components/profile/VerificationStatusCard";
+import { api, waitForRun, type Contact, type Fact, type FactKind, type Preferences, type Resume, type Tier } from "@/lib/api";
 
 export default function OnboardingPage() {
   const router = useRouter();
   const [facts, setFacts] = useState<Fact[]>([]);
   const [prefs, setPrefs] = useState<Preferences | null>(null);
   const [resume, setResume] = useState<Resume | null>(null);
+  const [contact, setContact] = useState<Contact | null>(null);
+  const [contactSaved, setContactSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [kind, setKind] = useState<FactKind>("skill");
-  const [title, setTitle] = useState("");
-  const [years, setYears] = useState("");
+  const [pendingUpload, setPendingUpload] = useState<File | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [f, p, r] = await Promise.all([api.listFacts(), api.getPreferences(), api.getResume()]);
+      const [f, p, r, c] = await Promise.all([api.listFacts(), api.getPreferences(), api.getResume(), api.getContact()]);
+      setContact(c);
       setFacts(f);
       setPrefs(p);
       setResume(r);
@@ -44,11 +40,11 @@ export default function OnboardingPage() {
     void load();
   }, [load]);
 
-  async function upload(file: File) {
+  async function upload(file: File, replaceExisting = false) {
     setBusy("Reading your resume…");
     setError(null);
     try {
-      const { run_id } = await api.uploadResume(file);
+      const { run_id } = await api.uploadResume(file, replaceExisting);
       const run = await waitForRun(run_id);
       if (run.status === "failed") setError(`Parsing failed: ${run.error}`);
       await load();
@@ -59,18 +55,60 @@ export default function OnboardingPage() {
     }
   }
 
-  async function addFact(e: React.FormEvent) {
-    e.preventDefault();
-    if (!title.trim()) return;
+  /** Re-uploading over an existing resume needs the user's call: merge with what's already on the
+   * profile, or wipe it and start clean from this upload. A brand-new upload has nothing to choose
+   * between, so it goes straight through. */
+  function chooseFile(file: File) {
+    if (resume) {
+      setPendingUpload(file);
+    } else {
+      void upload(file);
+    }
+  }
+
+  function resolvePendingUpload(replaceExisting: boolean) {
+    if (!pendingUpload) return;
+    const file = pendingUpload;
+    setPendingUpload(null);
+    void upload(file, replaceExisting);
+  }
+
+  async function resetProfile() {
+    setBusy("Resetting your career profile…");
     setError(null);
     try {
-      await api.createFact({
-        kind,
-        title,
-        details: YEARS_KINDS.includes(kind) && years ? { years: Number(years) } : {},
-      });
-      setTitle("");
-      setYears("");
+      await api.resetProfile();
+      await load();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function saveContact(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const form = new FormData(e.currentTarget);
+    try {
+      setContact(
+        await api.putContact({
+          full_name: String(form.get("full_name")).trim(),
+          email: String(form.get("email")).trim(),
+          phone: String(form.get("phone")).trim(),
+          location: String(form.get("location")).trim(),
+          links: split(String(form.get("links"))),
+        }),
+      );
+      setContactSaved(true);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function addFact(kind: FactKind, title: string, details: Record<string, unknown>) {
+    setError(null);
+    try {
+      await api.createFact({ kind, title, details });
       await load();
     } catch (e) {
       setError(String(e));
@@ -81,20 +119,94 @@ export default function OnboardingPage() {
     setError(null);
     try {
       const n = nextYears.trim();
-      await api.updateFact(id, { details: n ? { years: Number(n) } : {} });
+      const fact = facts.find((f) => f.id === id);
+      await api.updateFact(id, { details: { ...fact?.details, years: n ? Number(n) : undefined } });
       await load();
     } catch (e) {
       setError(String(e));
     }
   }
 
-  /** Entering years on an extracted-but-unconfirmed fact is treated as confirming it. */
+  /** Highlights feed the tailored resume and cover letter directly (resume_tailor.v1 / cover_letter.v1
+   * only draw from a role's verified bullets) - without these, generated documents stay generic even
+   * when the role itself is fully verified. */
+  async function updateFactHighlights(id: string, highlights: string[]) {
+    setError(null);
+    try {
+      const fact = facts.find((f) => f.id === id);
+      await api.updateFact(id, { details: { ...fact?.details, highlights } });
+      await load();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  /** Company/dates only ever show on a generated resume when they're set here - the resume header
+   * pulls them straight from the fact, never invents them. */
+  async function updateFactField(id: string, field: string, value: string) {
+    setError(null);
+    try {
+      const fact = facts.find((f) => f.id === id);
+      await api.updateFact(id, { details: { ...fact?.details, [field]: value || undefined } });
+      await load();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function removeFact(id: string) {
+    setError(null);
+    try {
+      await api.deleteFact(id);
+      await load();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  /** Entering years, a company/dates field, or a bullet on an extracted-but-unconfirmed fact is
+   * treated as confirming it - the same "yes, this is real" signal as clicking Confirm. */
   async function confirmPendingWithYears(id: string, nextYears: string) {
     const n = nextYears.trim();
     if (!n) return;
     setError(null);
     try {
-      await api.updateFact(id, { details: { years: Number(n) } });
+      const fact = facts.find((f) => f.id === id);
+      await api.updateFact(id, { details: { ...fact?.details, years: Number(n) } });
+      await api.verifyFact(id);
+      await load();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function confirmPendingField(id: string, field: string, value: string) {
+    setError(null);
+    try {
+      const fact = facts.find((f) => f.id === id);
+      await api.updateFact(id, { details: { ...fact?.details, [field]: value || undefined } });
+      await api.verifyFact(id);
+      await load();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function confirmPendingHighlights(id: string, highlights: string[]) {
+    setError(null);
+    try {
+      const fact = facts.find((f) => f.id === id);
+      await api.updateFact(id, { details: { ...fact?.details, highlights } });
+      await api.verifyFact(id);
+      await load();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function confirmPending(id: string) {
+    setError(null);
+    try {
       await api.verifyFact(id);
       await load();
     } catch (e) {
@@ -114,6 +226,17 @@ export default function OnboardingPage() {
       remote_modes: form.getAll("remote_modes") as Preferences["remote_modes"],
       salary_min: form.get("salary_min") ? Number(form.get("salary_min")) : null,
       dealbreakers: split(String(form.get("dealbreakers"))),
+      excluded_title_keywords: split(String(form.get("excluded_title_keywords"))),
+      seniority: (String(form.get("seniority")) || null) as Tier | null,
+      skip_tiers: form.getAll("skip_tiers") as Tier[],
+      authorized_in: split(String(form.get("authorized_in"))),
+      needs_sponsorship: (() => {
+        const sponsorship = String(form.get("sponsorship") ?? "");
+        return sponsorship === "required" ? true : sponsorship === "not_required" ? false : null;
+      })(),
+      archetypes: FITS.flatMap(({ fit }) =>
+        split(String(form.get(`archetype_${fit}`))).map((name) => ({ name, fit })),
+      ),
     };
     setBusy("Saving preferences…");
     try {
@@ -148,9 +271,12 @@ export default function OnboardingPage() {
   const verifiedByKind = KINDS.map((k) => ({ kind: k, items: verified.filter((f) => f.kind === k) })).filter(
     (g) => g.items.length > 0,
   );
+  const pendingByKind = KINDS.map((k) => ({ kind: k, items: pending.filter((f) => f.kind === k) })).filter(
+    (g) => g.items.length > 0,
+  );
 
   return (
-    <div className="space-y-10">
+    <div className="space-y-6">
       <div>
         <SectionEyebrow>Your profile</SectionEyebrow>
         <h1 className="mt-1 text-3xl font-semibold tracking-tight text-slate-900">Let's build your profile</h1>
@@ -162,205 +288,48 @@ export default function OnboardingPage() {
 
       <ErrorNote error={error} />
 
-      <Card>
-        <div className="flex items-start gap-3">
-          <StepBadge n={1} />
-          <div className="min-w-0 flex-1">
-            <h2 className="font-semibold text-slate-900">Resume</h2>
-            <p className="text-sm text-slate-500">PDF, DOCX or TXT. You will confirm each extracted fact below.</p>
-            {resume && (
-              <p className="mt-3 rounded-xl bg-slate-50 px-3.5 py-2.5 text-sm text-slate-700">
-                Current resume:{" "}
-                <a className="font-medium text-indigo-600 hover:underline" href={resume.download_url}>
-                  {resume.filename}
-                </a>{" "}
-                <span className="text-slate-400">(uploaded {new Date(resume.uploaded_at).toLocaleDateString()})</span>
-              </p>
-            )}
-            <label className="mt-3 flex w-fit cursor-pointer items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-50 has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-50">
-              Choose file
-              <input
-                type="file"
-                accept=".pdf,.docx,.txt"
-                className="hidden"
-                disabled={!!busy}
-                onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])}
-              />
-            </label>
-            {busy && <p className="mt-2 text-sm text-indigo-600">{busy}</p>}
-          </div>
-        </div>
-      </Card>
+      <NextStepBanner hasResume={!!resume} pendingCount={pending.length} verifiedCount={verified.length} />
 
-      {pending.length > 0 && (
-        <Card className="border-amber-200 bg-amber-50/40">
-          <h2 className="font-semibold text-slate-900">Confirm extracted facts ({pending.length})</h2>
-          <p className="text-sm text-slate-500">
-            Add years of experience where it applies — that confirms it automatically. Otherwise, confirm manually.
-          </p>
-          <ul className="mt-3 divide-y divide-slate-200/70">
-            {pending.map((f) => (
-              <li key={f.id} className="flex flex-wrap items-center justify-between gap-2 py-2.5 text-sm">
-                <span className="flex items-center gap-2">
-                  <span className="rounded-full bg-white px-2 py-0.5 text-xs font-medium uppercase tracking-wide text-slate-500 ring-1 ring-slate-200">
-                    {f.kind}
-                  </span>
-                  <span className="font-medium text-slate-800">{f.title}</span>
-                </span>
-                <span className="flex items-center gap-2">
-                  {YEARS_KINDS.includes(f.kind) && (
-                    <FactYears fact={f} onSave={(v) => confirmPendingWithYears(f.id, v)} />
-                  )}
-                  <Button onClick={() => api.verifyFact(f.id).then(load)}>Confirm</Button>
-                  <Button variant="secondary" onClick={() => api.deleteFact(f.id).then(load)}>
-                    Remove
-                  </Button>
-                </span>
-              </li>
-            ))}
-          </ul>
-        </Card>
-      )}
+      <ResumeCard
+        resume={resume}
+        busy={busy}
+        pendingUpload={pendingUpload}
+        onChooseFile={chooseFile}
+        onResolvePendingUpload={resolvePendingUpload}
+        onCancelPendingUpload={() => setPendingUpload(null)}
+        onResetProfile={resetProfile}
+      />
 
-      <Card>
-        <div className="flex items-start gap-3">
-          <StepBadge n={2} />
-          <div className="min-w-0 flex-1">
-            <h2 className="font-semibold text-slate-900">Verified career knowledge base ({verified.length})</h2>
-            <form onSubmit={addFact} className="mt-3 flex flex-wrap gap-2">
-              <select
-                value={kind}
-                onChange={(e) => setKind(e.target.value as FactKind)}
-                className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-700"
-              >
-                {KINDS.map((k) => (
-                  <option key={k} value={k}>
-                    {KIND_LABELS[k]}
-                  </option>
-                ))}
-              </select>
-              <input
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder={kind === "role" ? "Data Analyst at Acme" : "e.g. Python"}
-                className="min-w-60 flex-1 rounded-lg border border-slate-200 px-3 py-1.5 text-sm placeholder:text-slate-400 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100"
-              />
-              {YEARS_KINDS.includes(kind) && (
-                <input
-                  value={years}
-                  onChange={(e) => setYears(e.target.value)}
-                  placeholder="years"
-                  type="number"
-                  step="0.5"
-                  min="0"
-                  className="w-20 rounded-lg border border-slate-200 px-2.5 py-1.5 text-sm placeholder:text-slate-400 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100"
-                />
-              )}
-              <Button type="submit">Add</Button>
-            </form>
+      <VerificationStatusCard
+        pendingByKind={pendingByKind}
+        pendingCount={pending.length}
+        verifiedCount={verified.length}
+        onConfirm={confirmPending}
+        onConfirmYears={confirmPendingWithYears}
+        onConfirmField={confirmPendingField}
+        onConfirmHighlights={confirmPendingHighlights}
+        onRemove={removeFact}
+      />
 
-            {verifiedByKind.length === 0 ? (
-              <p className="mt-4 text-sm text-slate-500">Nothing verified yet — add a skill above or confirm facts from your resume.</p>
-            ) : (
-              <div className="mt-5 space-y-5">
-                {verifiedByKind.map(({ kind: k, items }) => (
-                  <div key={k}>
-                    <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                      {KIND_LABELS[k]}
-                    </h3>
-                    <ul className="mt-2 divide-y divide-slate-100 rounded-xl border border-slate-100">
-                      {items.map((f) => (
-                        <li key={f.id} className="flex items-center justify-between gap-3 px-3.5 py-2.5 text-sm">
-                          <span className="text-slate-800">{f.title}</span>
-                          <span className="flex items-center gap-3">
-                            {YEARS_KINDS.includes(f.kind) && (
-                              <span className="flex items-center gap-1 text-xs text-slate-400">
-                                <FactYears fact={f} onSave={(v) => updateFactYears(f.id, v)} /> yrs
-                              </span>
-                            )}
-                            <button
-                              className="text-slate-300 transition-colors hover:text-rose-600"
-                              onClick={() => api.deleteFact(f.id).then(load)}
-                              aria-label={`Remove ${f.title}`}
-                            >
-                              ×
-                            </button>
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      </Card>
+      <CareerInformationCard
+        verifiedByKind={verifiedByKind}
+        onAdd={addFact}
+        onUpdateYears={updateFactYears}
+        onUpdateField={updateFactField}
+        onUpdateHighlights={updateFactHighlights}
+        onRemove={removeFact}
+      />
 
-      {prefs && (
-        <Card>
-          <div className="flex items-start gap-3">
-            <StepBadge n={3} />
-            <div className="min-w-0 flex-1">
-              <h2 className="font-semibold text-slate-900">Job preferences</h2>
-              <p className="text-sm text-slate-500">
-                Saving preferences automatically searches allow-listed job boards and scores your matches.
-              </p>
-              <form onSubmit={savePrefsAndSearch} className="mt-4 grid gap-4 text-sm sm:grid-cols-2">
-                <Field label="Target roles (comma separated)" name="target_titles" value={prefs.target_titles.join(", ")} />
-                <Field label="Locations" name="locations" value={prefs.locations.join(", ")} />
-                <Field label="Minimum salary" name="salary_min" value={prefs.salary_min?.toString() ?? ""} type="number" />
-                <Field label="Dealbreakers" name="dealbreakers" value={prefs.dealbreakers.join(", ")} />
-                <fieldset className="flex gap-4 sm:col-span-2">
-                  {(["onsite", "hybrid", "remote"] as const).map((m) => (
-                    <label key={m} className="flex items-center gap-1.5 text-slate-600">
-                      <input type="checkbox" name="remote_modes" value={m} defaultChecked={prefs.remote_modes.includes(m)} />
-                      {m}
-                    </label>
-                  ))}
-                </fieldset>
-                <div className="sm:col-span-2">
-                  <Button type="submit" disabled={!!busy}>
-                    {busy ?? "Save preferences & find my matches"}
-                  </Button>
-                </div>
-              </form>
-            </div>
-          </div>
-        </Card>
+      {prefs && <PreferencesCard prefs={prefs} busy={busy} onSave={savePrefsAndSearch} />}
+
+      {contact && (
+        <ContactCard
+          contact={contact}
+          contactSaved={contactSaved}
+          onSave={saveContact}
+          onDirty={() => setContactSaved(false)}
+        />
       )}
     </div>
-  );
-}
-
-function Field({ label, name, value, type = "text" }: { label: string; name: string; value: string; type?: string }) {
-  return (
-    <label className="flex flex-col gap-1.5">
-      <span className="text-xs font-medium text-slate-500">{label}</span>
-      <input
-        name={name}
-        defaultValue={value}
-        type={type}
-        className="rounded-lg border border-slate-200 px-3 py-1.5 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100"
-      />
-    </label>
-  );
-}
-
-function FactYears({ fact, onSave }: { fact: Fact; onSave: (years: string) => void }) {
-  const initial = typeof fact.details.years === "number" ? String(fact.details.years) : "";
-  const [value, setValue] = useState(initial);
-  return (
-    <input
-      value={value}
-      onChange={(e) => setValue(e.target.value)}
-      onBlur={() => value !== initial && onSave(value)}
-      type="number"
-      step="0.5"
-      min="0"
-      placeholder="yrs"
-      title="Years of experience"
-      className="w-14 rounded-md border border-slate-200 px-1.5 py-1 text-center text-xs focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100"
-    />
   );
 }

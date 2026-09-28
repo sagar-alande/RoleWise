@@ -33,20 +33,34 @@ class FactOut(ORM):
     verified_at: datetime | None
 
 
+Tier = Literal["intern", "entry", "mid", "senior"]
+
+
+class ArchetypeIn(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    fit: Literal["primary", "secondary", "adjacent"] = "primary"
+
+
 class PreferencesIn(BaseModel):
     target_titles: list[str] = []
     locations: list[str] = []
     remote_modes: list[Literal["onsite", "hybrid", "remote"]] = []
     salary_min: int | None = None
     currency: str = "USD"
-    seniority: str | None = None
+    seniority: Tier | None = None
     employment_types: list[str] = []
     industries: list[str] = []
     dealbreakers: list[str] = []
+    excluded_title_keywords: list[str] = []
+    skip_tiers: list[Tier] = []
+    authorized_in: list[str] = []
+    needs_sponsorship: bool | None = None
+    archetypes: list[ArchetypeIn] = []
 
 
 class PreferencesOut(PreferencesIn, ORM):
-    pass
+    seniority: str | None = None  # lenient on read: rows saved before tiers were enforced
+    skip_tiers: list[str] = []
 
 
 class UploadUrlRequest(BaseModel):
@@ -62,6 +76,7 @@ class UploadUrlResponse(BaseModel):
 class ParseRequest(BaseModel):
     s3_key: str
     filename: str
+    replace_existing: bool = False
 
 
 class ResumeOut(BaseModel):
@@ -96,6 +111,8 @@ class JobOut(ORM):
     salary_max: int | None
     url: str | None
     created_at: datetime
+    listing_status: str
+    last_checked_at: datetime | None
 
 
 class GapOut(ORM):
@@ -110,6 +127,9 @@ class MatchOut(ORM):
     id: uuid.UUID
     job: JobOut
     score: float
+    global_score: float | None = None
+    verdict: str | None = None
+    has_documents: bool = False
     status: str
     breakdown: dict
     explanation: dict | None
@@ -131,3 +151,40 @@ class RunOut(ORM):
     error: str | None
     started_at: datetime
     ended_at: datetime | None
+
+
+class ContactIn(BaseModel):
+    """Resume header details. Entered by the user, never generated."""
+    full_name: str = Field(default="", max_length=200)
+    email: str = Field(default="", max_length=320)
+    phone: str = Field(default="", max_length=50)
+    location: str = Field(default="", max_length=200)
+    links: list[str] = Field(default_factory=list, max_length=5)
+
+
+class GenerateDocumentsIn(BaseModel):
+    tone: Literal["mirror", "formal", "direct", "conversational"] = "mirror"
+    angle: str | None = Field(default=None, max_length=500)  # the candidate's own "why this role"
+
+
+class DocumentOut(ORM):
+    id: uuid.UUID
+    match_id: uuid.UUID | None
+    kind: str
+    version: int
+    content: dict
+    status: str
+    created_at: datetime
+
+
+class DocumentVersion(ORM):
+    id: uuid.UUID
+    kind: str
+    version: int
+    created_at: datetime
+
+
+class MatchDocumentsOut(BaseModel):
+    resume: DocumentOut | None = None
+    cover_letter: DocumentOut | None = None
+    history: list[DocumentVersion] = []

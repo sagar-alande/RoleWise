@@ -1,0 +1,17 @@
+# Backend image build context is the repo root (apps/backend/Dockerfile), so exclude everything
+# neither it nor apps/web's own Dockerfile (context ./apps/web) actually needs.
+.git/
+node_modules/
+.next/
+out/
+cdk.out/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.DS_Store
+*.log
+docs/
+evals/

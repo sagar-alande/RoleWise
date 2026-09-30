@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     cognito_user_pool_id: str = ""
     cognito_app_client_id: str = ""
 
+    # Comma-separated origins the deployed web app is served from (the CDK stack sets this from the
+    # same -c webOrigins=... the Cognito Hosted UI callback allowlist uses). Ignored when is_local -
+    # local dev's CORS origin is hardcoded to the docker-compose web port instead (see api/main.py).
+    web_origins: str = ""
+
     prompts_dir: Path = Field(default_factory=_default_prompts_dir)
 
     # Matching configuration. Weights must sum to 1.0.
@@ -86,6 +91,10 @@ class Settings(BaseSettings):
     @property
     def is_local(self) -> bool:
         return self.app_env == "local"
+
+    @property
+    def web_origin_list(self) -> list[str]:
+        return [o.strip() for o in self.web_origins.split(",") if o.strip()]
 
 
 @lru_cache

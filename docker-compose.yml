@@ -21,7 +21,9 @@ services:
       - ./infra/localstack-init.sh:/etc/localstack/init/ready.d/init.sh
 
   api:
-    build: ./apps/backend
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
     env_file: .env
     command: uvicorn rolewise.api.main:app --host 0.0.0.0 --port 8000 --reload
     volumes: ["./apps/backend:/app", "./packages/prompts:/prompts"]
@@ -33,7 +35,9 @@ services:
       localstack: {condition: service_started}
 
   worker:
-    build: ./apps/backend
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
     env_file: .env
     command: python -m rolewise.worker.main
     volumes: ["./apps/backend:/app", "./packages/prompts:/prompts"]

@@ -14,21 +14,63 @@ One stack per environment: `RoleWise-dev`, `RoleWise-staging`, `RoleWise-prod`.
 
 ## First deploy (once per environment)
 
-Express Mode needs an image to exist, so the first deploy creates everything except the services.
+Express Mode needs an image to exist, so the first deploy creates everything except the services. The
+web image also needs the API's real URL baked in at build time (see `apps/web/lib/api.ts`), and that
+URL doesn't exist until the api service is up - so the very first deploy unavoidably takes two passes.
+All commands below run from the repo root unless noted.
+
+**1. Infra only** (VPC, RDS, S3, SQS, Cognito, the two ECR repos - no services yet):
 
 ```
 cd infra && npm ci
 npx cdk bootstrap                                     # once per account/region
 npx cdk deploy RoleWise-dev -c env=dev -c deployServices=false
+cd ..
 ```
 
-Then build and push the first images to the two ECR repositories in the stack outputs, and run:
+**2. Build and push both images**, using whatever placeholder API URL you like for this first web
+build (pass 4 replaces it with the real one):
 
 ```
-npx cdk deploy RoleWise-dev -c env=dev -c imageTag=<git sha>
+docker build -f apps/backend/Dockerfile -t <backend-ecr-uri>:<tag> .
+docker push <backend-ecr-uri>:<tag>
+
+docker build -f apps/web/Dockerfile --build-arg NEXT_PUBLIC_API_URL=http://placeholder \
+  -t <web-ecr-uri>:<tag> ./apps/web
+docker push <web-ecr-uri>:<tag>
 ```
 
-After that, the GitHub `Deploy` workflow handles everything: build, push, deploy, migrate, smoke test.
+(`<backend-ecr-uri>` / `<web-ecr-uri>` are the `BackendRepoUri` / `WebRepoUri` stack outputs from step 1.)
+
+**3. Deploy the services** and read back the real endpoints:
+
+```
+npx cdk deploy RoleWise-dev -c env=dev -c imageTag=<tag>
+```
+
+Note the `ApiEndpoint` and `WebEndpoint` outputs (each is a bare hostname; the web app is served over
+HTTPS, so the actual origin is `https://<WebEndpoint>`).
+
+**4. Rebuild the web image with the real API URL**, and redeploy with `webOrigins` set so the API's
+CORS allowlist (and, later, Cognito's Hosted UI callback allowlist if Google Sign-In is enabled) covers
+the real web origin - `apps/backend/rolewise/api/main.py` allows no cross-origin browser access at all
+until this runs:
+
+```
+docker build -f apps/web/Dockerfile --build-arg NEXT_PUBLIC_API_URL=https://<ApiEndpoint> \
+  -t <web-ecr-uri>:<tag> ./apps/web
+docker push <web-ecr-uri>:<tag>
+
+cd infra
+npx cdk deploy RoleWise-dev -c env=dev -c imageTag=<tag> -c webOrigins=https://<WebEndpoint>
+cd ..
+```
+
+Every deploy after this one is a single `cdk deploy ... -c imageTag=<new tag>` once both images are
+rebuilt and pushed - only the very first deploy needs the placeholder pass, since the API URL and web
+origin don't change on their own between deploys.
+
+There is no GitHub Actions workflow yet, so every step above is run by hand.
 
 ## Also set up
 

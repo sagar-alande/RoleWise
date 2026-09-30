@@ -136,6 +136,12 @@ export class RoleWiseStack extends cdk.Stack {
     let userPoolClient: cognito.UserPoolClient;
     let hostedUiDomain: cognito.UserPoolDomain | undefined;
 
+    // The origins the web app is actually served from - used for the API's CORS allowlist below
+    // regardless of Google Sign-In, and additionally for the Hosted UI callback allowlist when
+    // Google is enabled. Only known once the web Express service exists (see infra/README.md's
+    // deploy sequence), so this defaults to localhost until a redeploy passes the real one(s).
+    const webOrigins = props.webOrigins ?? ["http://localhost:3000"];
+
     if (googleEnabled) {
       const googleIdp = new cognito.UserPoolIdentityProviderGoogle(this, "Google", {
         userPool,
@@ -151,7 +157,6 @@ export class RoleWiseStack extends cdk.Stack {
       hostedUiDomain = userPool.addDomain("HostedUiDomain", {
         cognitoDomain: { domainPrefix: name("auth").replace(/[^a-z0-9-]/g, "") },
       });
-      const webOrigins = props.webOrigins ?? ["http://localhost:3000"];
       userPoolClient = userPool.addClient("WebClient", {
         generateSecret: false, // public SPA client - Authorization Code + PKCE, no secret to protect
         oAuth: {
@@ -212,6 +217,7 @@ export class RoleWiseStack extends cdk.Stack {
       BEDROCK_ENABLED: "true",
       COGNITO_USER_POOL_ID: userPool.userPoolId,
       COGNITO_APP_CLIENT_ID: userPoolClient.userPoolClientId,
+      WEB_ORIGINS: webOrigins.join(","),
     };
     const dbSecret = { name: "DB_SECRET", valueFrom: db.secret!.secretArn };
 

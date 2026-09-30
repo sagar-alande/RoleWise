@@ -4,7 +4,17 @@
 import { getAccessToken } from "@/lib/auth";
 import { IS_LOCAL } from "@/lib/env";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+// Falls back to localhost only for real local dev (NEXT_PUBLIC_APP_ENV=local, set by docker-compose's
+// .env). Any other build must bake in the real API URL as a Docker build-arg - see the Dockerfile and
+// infra/README.md's deploy sequence. A silent fallback here would mean every visitor's browser quietly
+// tries to reach their own localhost instead of a real error at build time.
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? (IS_LOCAL ? "http://localhost:8000" : undefined);
+if (!API_URL) {
+  throw new Error(
+    "NEXT_PUBLIC_API_URL is not set. Pass it as a Docker build-arg (see infra/README.md) - it must be " +
+      "baked in at build time, not left to a runtime default.",
+  );
+}
 
 export type FactKind = "skill" | "role" | "project" | "education" | "certification" | "achievement";
 

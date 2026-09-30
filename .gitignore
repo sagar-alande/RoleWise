@@ -8,6 +8,7 @@ node_modules/
 .next/
 out/
 cdk.out/
+tsconfig.tsbuildinfo
 *.log
 .DS_Store
 *.egg-info/

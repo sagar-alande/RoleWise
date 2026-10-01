@@ -8,6 +8,7 @@ import uuid
 from functools import lru_cache
 
 import boto3
+from botocore.client import Config
 
 from rolewise.config import get_settings
 
@@ -22,9 +23,17 @@ def s3():
 
 @lru_cache
 def s3_presigner():
-    """Presigned URLs must use an endpoint the browser can reach."""
+    """Presigned URLs must use an endpoint the browser can reach. SigV4 is required: the bucket's
+    SSE-KMS encryption rejects the legacy SigV2 signer boto3 otherwise defaults to for presigned
+    URLs in some regions (confirmed against real S3: "Requests specifying Server Side Encryption
+    with AWS KMS managed keys require AWS Signature Version 4")."""
     s = get_settings()
-    return boto3.client("s3", region_name=s.aws_region, endpoint_url=s.s3_public_endpoint_url or s.aws_endpoint_url)
+    return boto3.client(
+        "s3",
+        region_name=s.aws_region,
+        endpoint_url=s.s3_public_endpoint_url or s.aws_endpoint_url,
+        config=Config(signature_version="s3v4"),
+    )
 
 
 @lru_cache

@@ -214,7 +214,13 @@ export class RoleWiseStack extends cdk.Stack {
       AWS_REGION: this.region,
       S3_BUCKET: bucket.bucketName,
       SQS_QUEUE_URL: queue.queueUrl,
-      BEDROCK_ENABLED: "true",
+      // Bedrock model access for this account is unreliable (intermittent Anthropic use-case
+      // entitlement, confirmed via direct Converse/GetUseCaseForModelAccess testing - not an IAM or
+      // credentials issue). StubAI gives a fully deterministic, offline pipeline with identical
+      // functionality - same endpoints, same matching/gap-analysis/document-generation code paths -
+      // just templated text and word-overlap "embeddings" instead of real LLM output. Flip back to
+      // "true" once Bedrock access is confirmed stable.
+      BEDROCK_ENABLED: "false",
       COGNITO_USER_POOL_ID: userPool.userPoolId,
       COGNITO_APP_CLIENT_ID: userPoolClient.userPoolClientId,
       WEB_ORIGINS: webOrigins.join(","),
@@ -246,17 +252,23 @@ export class RoleWiseStack extends cdk.Stack {
     if (props.deployServices) {
       const publicSubnets = vpc.publicSubnets.map((s) => s.subnetId);
 
+      // minCapacity was 0 in dev to save cost when idle, but the scale-in step below triggers the
+      // instant SQS's visible-message count hits 0 - which happens as soon as the worker RECEIVES a
+      // message (it becomes in-flight, not visible), even while still actively processing it. That
+      // killed the only running task mid-job every time, abandoning real work (confirmed: a worker
+      // scale-in event landed 2 seconds after a discover_and_score task started). minCapacity=1 keeps
+      // a task alive so in-flight work is never killed out from under itself; nothing else here changed.
       const worker = new ecs.FargateService(this, "Worker", {
         cluster,
         taskDefinition: workerTaskDef,
-        desiredCount: isProd ? 1 : 0,
+        desiredCount: 1,
         securityGroups: [appSg],
         vpcSubnets: { subnetType: egressSubnetType },
         assignPublicIp: !isProd,
         minHealthyPercent: 100,
         circuitBreaker: { rollback: true },
       });
-      const scaling = worker.autoScaleTaskCount({ minCapacity: isProd ? 1 : 0, maxCapacity: 5 });
+      const scaling = worker.autoScaleTaskCount({ minCapacity: 1, maxCapacity: 5 });
       scaling.scaleOnMetric("QueueDepth", {
         metric: queue.metricApproximateNumberOfMessagesVisible({ period: cdk.Duration.minutes(1) }),
         scalingSteps: [

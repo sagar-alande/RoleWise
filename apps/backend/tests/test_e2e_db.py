@@ -599,3 +599,103 @@ def test_facts_with_identical_created_at_sort_deterministically(client):
     order2 = [f["id"] for f in client.get("/profile/facts").json() if f["id"] in ids]
     assert order1 == order2  # stable across repeated requests
     assert order1 == sorted(ids)  # and specifically ascending by id, proving id is the tiebreaker
+
+
+def test_local_dev_user_gets_email_without_a_cognito_call(client):
+    """Regression for the _get_or_create refactor: the local dev-header path must keep setting the
+    user's email straight from the header (no access token exists to call Cognito's GetUser with, and
+    it must not try - that would be None.get_user() and blow up)."""
+    from sqlalchemy import select
+
+    from rolewise.db import get_sessionmaker
+    from rolewise.models import User
+
+    client.get("/profile/facts")  # any authenticated call is enough to create the user row
+    dev_email = client.headers["X-Dev-User"]
+    with get_sessionmaker()() as db:
+        user = db.scalar(select(User).where(User.auth_subject == f"dev:{dev_email}"))
+        assert user is not None
+        assert user.email == dev_email
+
+
+def test_upgrade_legacy_requirements_backfills_jobs_that_never_got_extracted(client):
+    """Regression: extract_requirements() only ever runs once, at ingest (_ingest_platform_board),
+    and is never retried for a job already in the table. If it raised at that moment - most commonly
+    because the AI backend was down or misconfigured - the job is left with requirements_extracted=
+    False and ZERO JobRequirement rows forever, invisible to every future user's recall query
+    (Job.requirements_extracted.is_(True)) with no way back in. Confirmed live: this stranded 6,390 of
+    6,397 real jobs in the dev DB after a Bedrock outage, including every Data Engineer/Data Scientist/
+    Business Analyst posting - a real user with a perfect-fit profile got zero matches, not because
+    nothing matched, but because nothing matching ever reached scoring at all. The old version of this
+    function only picked up jobs with *legacy* (pre-importance-band) requirements - a job with no
+    requirements at all was never selected by that query in the first place."""
+    from rolewise.db import get_sessionmaker
+    from rolewise.models import Job, JobRequirement, JobSource
+    from rolewise.worker.connectors import content_hash
+    from rolewise.worker.tasks import upgrade_legacy_requirements
+
+    with get_sessionmaker()() as db:
+        source = JobSource(name="stuck-board-test", kind="ats_board", terms_ok=True)
+        db.add(source)
+        db.flush()
+        stuck = Job(
+            source_id=source.id, external_id="stuck-1", company="TestCo", title="Data Engineer",
+            description="We need a data engineer with Python and SQL experience.",
+            content_hash=content_hash("TestCo", "Data Engineer", "desc"),
+            requirements_extracted=False,
+        )
+        db.add(stuck)
+        db.commit()
+        stuck_id = stuck.id
+
+        assert db.query(JobRequirement).filter_by(job_id=stuck_id).count() == 0
+
+        processed = upgrade_legacy_requirements(db, limit=50)
+        assert processed >= 1
+
+        db.refresh(stuck)
+        assert stuck.requirements_extracted is True
+        assert stuck.embedding is not None
+        assert db.query(JobRequirement).filter_by(job_id=stuck_id).count() > 0
+
+
+def test_recall_supplements_embedding_with_exact_title_match(client, monkeypatch):
+    """Regression: score_matches()'s vector recall (top RECALL_LIMIT jobs by profile-embedding cosine
+    distance) is lossy - confirmed live, a real profile targeting "Data Engineer"/"Data Scientist"/
+    "Business Analyst" recalled zero of 79 title-matching jobs in the DB, out of 200 embedding-nearest
+    jobs, even though every one of them would have plainly passed hard_filter() on title alone. This
+    forces that exact failure mode with RECALL_LIMIT patched to 0 (vector recall returns nothing) and
+    asserts the title-phrase supplement still gets the job to a real match - not just into the
+    candidate pool, but scored and verdicted. target_titles is the only thing that should trigger the
+    supplement; a job that only matches semantically (not by literal title) must NOT be rescued this
+    way, since that would silently defeat hard_filter() for everyone, not just this bug's victims."""
+    import uuid
+
+    from sqlalchemy import select
+
+    from rolewise.db import get_sessionmaker
+    from rolewise.models import User
+    from rolewise.worker import tasks
+    from rolewise.worker.connectors import RawJob
+
+    client.post("/profile/facts", json={"kind": "skill", "title": "python", "details": {}})
+    prefs_resp = client.get("/profile/preferences").json()
+    prefs_resp["target_titles"] = ["Data Engineer"]
+    assert client.put("/profile/preferences", json=prefs_resp).status_code == 200
+
+    tag = uuid.uuid4().hex[:8]
+    _, refresh, job_by_title = _fake_board(client, monkeypatch, [
+        RawJob(external_id="1", company="TestCo", title=f"Data Engineer {tag}", location="Remote",
+              description="SQL and data pipelines required.", url="https://example.com/1"),
+    ])
+    run = refresh()
+    assert run["status"] == "done", run.get("error")
+    job = job_by_title(f"Data Engineer {tag}")
+    assert job is not None
+
+    dev_email = client.headers["X-Dev-User"]
+    with get_sessionmaker()() as db:
+        user = db.scalar(select(User).where(User.auth_subject == f"dev:{dev_email}"))
+        monkeypatch.setattr(tasks, "RECALL_LIMIT", 0)  # vector recall alone returns nothing
+        result = tasks.score_matches(db, user.id)
+        assert result["scored"] == 1, result

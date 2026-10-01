@@ -28,7 +28,7 @@ from rolewise.models import (
     User,
 )
 from rolewise.services import documents as docs
-from rolewise.services import matching
+from rolewise.services import matching, signals
 from rolewise.services.ai import get_ai
 from rolewise.services.explain import explain_match
 from rolewise.services.gaps import analyze_gaps
@@ -39,6 +39,9 @@ from rolewise.worker.connectors import CURATED_BOARDS, FETCHERS, content_hash
 log = logging.getLogger(__name__)
 
 RECALL_LIMIT = 200  # jobs pulled by vector similarity before full scoring
+# Extra jobs admitted by an exact title-phrase match, on top of RECALL_LIMIT, when target_titles is
+# set. See score_matches() for why this exists.
+TITLE_RECALL_LIMIT = 200
 EXPLAIN_TOP_N = 20  # only the best matches get an LLM explanation, to control cost
 
 
@@ -240,13 +243,27 @@ def extract_requirements(db: Session, job_id: uuid.UUID) -> dict:
 
 
 def upgrade_legacy_requirements(db: Session, limit: int = 200) -> int:
-    """Re-extract jobs whose requirements predate importance bands (job_requirements.v1)."""
-    legacy = db.scalars(
-        select(JobRequirement.job_id).where(JobRequirement.importance.is_(None)).distinct().limit(limit)
-    ).all()
-    for job_id in legacy:
-        extract_requirements(db, job_id)
-    return len(legacy)
+    """Re-extract jobs whose requirements predate importance bands (job_requirements.v1), AND jobs
+    that never got requirements at all. The latter happens whenever extract_requirements() raised at
+    ingest time (_ingest_platform_board only calls it once, for a newly-seen job, and never retries) -
+    most commonly because the AI backend was unavailable or misconfigured when the job was first
+    discovered. Those jobs sit in the table with requirements_extracted=False forever otherwise,
+    silently invisible to score_matches()'s recall query (Job.requirements_extracted.is_(True)) even
+    though their actual content might be a great fit - confirmed live: 6,390 of 6,397 jobs in the dev
+    DB were stuck exactly this way after a Bedrock outage, including every Data Engineer/Data
+    Scientist/Business Analyst posting, so zero of them could ever reach a real user's recall set."""
+    legacy_with_reqs = select(JobRequirement.job_id).where(JobRequirement.importance.is_(None)).distinct()
+    never_extracted = select(Job.id).where(Job.requirements_extracted.is_not(True))
+    job_ids = db.scalars(legacy_with_reqs.union(never_extracted).limit(limit)).all()
+    for job_id in job_ids:
+        try:
+            extract_requirements(db, job_id)
+        except Exception:
+            # One bad posting (e.g. a description the AI backend can't parse) must not block the
+            # rest of this batch - same per-job isolation _ingest_platform_board already relies on.
+            db.rollback()
+            log.exception("failed to (re-)extract requirements for job %s", job_id)
+    return len(job_ids)
 
 
 def _ingest_platform_board(db: Session, platform: str, board_token: str, company: str | None = None) -> dict:
@@ -405,12 +422,34 @@ def score_matches(db: Session, user_id: uuid.UUID) -> dict:
     prefs = _prefs_in(db.get(Preference, user_id))
     has_resume = any(f.source == "resume_parse" for f in facts)
 
-    jobs = db.scalars(
-        select(Job)
-        .where(Job.requirements_extracted.is_(True), Job.embedding.is_not(None))
+    eligible = (Job.requirements_extracted.is_(True), Job.embedding.is_not(None))
+    jobs = list(db.scalars(
+        select(Job).where(*eligible)
         .order_by(Job.embedding.cosine_distance(profile_vec))
         .limit(RECALL_LIMIT)
-    ).all()
+    ).all())
+
+    if prefs.target_titles:
+        # The embedding-based recall above is lossy - especially with StubAI's embeddings, which only
+        # reflect shared words rather than real meaning (see ai.py) - and can rank an entire relevant
+        # occupational category outside the top RECALL_LIMIT even though hard_filter() below would
+        # plainly accept those jobs on title alone. Confirmed live: a profile targeting "Data
+        # Engineer"/"Data Scientist"/"Business Analyst" recalled zero of the 79 jobs in the DB whose
+        # title actually phrase-matched one of those, out of RECALL_LIMIT=200 embedding-nearest jobs.
+        # This supplements recall with an exact, cheap title-phrase scan (the same check hard_filter()
+        # already does, not a new rule) so a job is never silently excluded from scoring just because
+        # the embedding space ranked it far away. Pure string work, no AI call - same (near-zero) cost
+        # under real Bedrock embeddings too, just rarely needed there since real embeddings already
+        # tend to rank these jobs highly on their own.
+        already = {j.id for j in jobs}
+        id_titles = db.execute(select(Job.id, Job.title).where(*eligible)).all()
+        matched_ids = [
+            jid for jid, title in id_titles
+            if jid not in already
+            and any(signals.title_phrase_match(title, t) for t in prefs.target_titles if t.strip())
+        ][:TITLE_RECALL_LIMIT]
+        if matched_ids:
+            jobs += db.scalars(select(Job).where(Job.id.in_(matched_ids))).all()
 
     scored: list[tuple[Job, matching.MatchResult]] = []
     for job in jobs:

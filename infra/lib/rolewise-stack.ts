@@ -194,6 +194,11 @@ export class RoleWiseStack extends cdk.Stack {
     const apiTaskRole = new iam.Role(this, "ApiTaskRole", { assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com") });
     bucket.grantReadWrite(apiTaskRole, "resumes/*");
     queue.grantSendMessages(apiTaskRole);
+    // Cognito access tokens never carry an email claim (only ID tokens do) - current_user() reads a
+    // new user's email via GetUser, the non-admin API scoped to the caller's own access token.
+    apiTaskRole.addToPolicy(
+      new iam.PolicyStatement({ actions: ["cognito-idp:GetUser"], resources: [userPool.userPoolArn] }),
+    );
 
     const workerTaskRole = new iam.Role(this, "WorkerTaskRole", { assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com") });
     bucket.grantReadWrite(workerTaskRole);

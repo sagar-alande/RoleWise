@@ -42,6 +42,12 @@ def sqs():
     return boto3.client("sqs", region_name=s.aws_region, endpoint_url=s.aws_endpoint_url)
 
 
+@lru_cache
+def cognito_idp():
+    s = get_settings()
+    return boto3.client("cognito-idp", region_name=s.aws_region, endpoint_url=s.aws_endpoint_url)
+
+
 def enqueue(task: str, run_id: uuid.UUID, payload: dict) -> None:
     """Send a task to the worker. Without a queue URL (tests), the task runs inline."""
     body = {"task": task, "run_id": str(run_id), "payload": payload}
